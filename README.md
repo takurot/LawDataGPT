@@ -1,107 +1,131 @@
-# e-Gov Law Summarizer
+# e-Gov Law Data Fetcher and Summarizer
 
-This script fetches law data from the e-Gov API, processes it, and generates concise summaries using OpenAI's API. It supports filtering by law category and promulgation date.
+## Overview
+
+This script fetches law data from the Japanese e-Gov API, generates summaries using the OpenAI API, and saves the results into JSON files. It is designed to handle large volumes of data efficiently by chunking and hierarchical summarization.
 
 ## Features
-- Fetch law data by category using the [e-Gov API](https://www.e-gov.go.jp/).
-- Filter laws by minimum promulgation date.
-- Generate summaries of laws using OpenAI's API.
-- Save results as a JSON file with metadata and references.
 
-## Requirements
-- Python 3.8+
-- e-Gov API key and SoftwareID (if required).
-- OpenAI API key.
+- Fetches law lists and full texts for specified categories and date ranges.
+- Generates hierarchical summaries of laws using the OpenAI API.
+- Supports output to JSON files, automatically managing file sizes.
+- Easy configuration of API keys and settings.
+
+## Prerequisites
+
+1. **Python 3.8 or higher**
+2. Required Python libraries:
+   - `requests`
+   - `json`
+   - `tqdm`
+   - `argparse`
+   - `openai`
+   - `re`
+   - `xml.etree.ElementTree`
+3. An OpenAI API key stored as the environment variable `OPENAI_API_KEY`.
+4. A valid `api_headers.json` file containing the e-Gov API headers.
 
 ## Installation
-1. Clone this repository:
-    ```bash
-    git clone https://github.com/your-username/e-gov-law-summarizer.git
-    cd e-gov-law-summarizer
-    ```
 
-2. Install dependencies:
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-3. Create a configuration file named `api_headers.json` in the root directory with the following content:
-
-    ```json
-    {
-        "X-API-KEY": "your_api_key_here",
-        "SoftwareID": "your_software_id_here",  // Remove if not required
-        "Accept": "application/xml",
-        "User-Agent": "eGovLawFetcher/1.0"
-    }
-    ```
+1. Clone the repository or download the script file.
+2. Install the required dependencies:
+   ```bash
+   pip install requests tqdm openai
+   ```
+3. Set up the OpenAI API key as an environment variable:
+   ```bash
+   export OPENAI_API_KEY="your_openai_api_key"
+   ```
+4. Place the `api_headers.json` file in the same directory as the script.
 
 ## Usage
-### Command-line Arguments
-- `--law_category`: (Required) The category of laws to fetch. Choose from the following:
-  - `1`: 憲法
-  - `2`: 法律
-  - `3`: 政令
-  - `4`: 府省令・規則
-  - `5`: 条約
-  - `6`: 閣議決定
-  - `7`: 省令
-  - `8`: 条例
-  - `9`: その他の法令
-- `--promulgation_date`: (Optional) The minimum promulgation date to filter laws, in `YYYY-MM-DD` format. Default: `2023-01-01`.
 
-### Examples
-#### Fetch and summarize laws from category "法律" (Law) after 2022-01-01:
+Run the script using the following command:
+
 ```bash
-python script.py --law_category 2 --promulgation_date 2022-01-01
+python script.py <categories> --start_date <start_date> --end_date <end_date>
 ```
 
-#### Fetch and summarize all laws from category "条約" (Treaty):
+### Arguments
+
+- `<categories>`: Space-separated list of category numbers to process. Available categories are:
+  - `2`: Constitutional laws and acts
+  - `3`: Cabinet orders and Imperial ordinances
+  - `4`: Ministerial ordinances and regulations
+- `--start_date`: Start date in `YYYY-MM-DD` format.
+- `--end_date`: End date in `YYYY-MM-DD` format.
+
+### Example
+
+Fetch and summarize laws in categories 2, 3, and 4 from December 15, 2004, to December 15, 2024:
+
 ```bash
-python script.py --law_category 5
+python script.py 2 3 4 --start_date 2004-12-15 --end_date 2024-12-15
 ```
 
-### Output
-The script saves results in a JSON file named `<CategoryName>_summary_<YYYYMMDD>.json`. Example file content:
+## Output
+
+The script saves summarized data into JSON files named according to the format:
+
+```
+law_data_category_<category>_<file_count>_<start_date>_to_<end_date>.json
+```
+
+Each file contains the following fields:
+
+- `LawId`: Unique identifier for the law.
+- `LawNumber`: Number assigned to the law.
+- `LawName`: Name of the law.
+- `PromulgationDate`: Date the law was promulgated.
+- `Summary`: Hierarchical summary of the law's content.
+
+## Error Handling
+
+1. If the OpenAI API key is not set, the script exits with an error message.
+2. If the `api_headers.json` file is missing or invalid, the script exits with an error message.
+3. If the API response contains invalid data or fails, the script logs an appropriate message and continues processing other laws.
+
+## Configuration
+
+### API Key
+
+Ensure the OpenAI API key is set as an environment variable:
+
+```bash
+export OPENAI_API_KEY="your_openai_api_key"
+```
+
+### API Headers
+
+Prepare the `api_headers.json` file with valid e-Gov API headers:
+
 ```json
-[
-    {
-        "LawId": "123456",
-        "LawNumber": "法律第123号",
-        "LawName": "サンプル法例",
-        "Category": "法律",
-        "PromulgationDate": "2023-05-01",
-        "Summary": {
-            "Content": "この法律はサンプルです。",
-            "GeneratedDate": "20231121"
-        },
-        "Metadata": {
-            "References": [
-                {
-                    "Title": "e-Gov 法令全文リンク",
-                    "URL": "https://laws.e-gov.go.jp/law/123456"
-                }
-            ]
-        }
-    }
-]
+{
+  "Authorization": "Bearer your_api_token",
+  "Accept": "application/xml"
+}
 ```
 
-## Development
-### Prerequisites
-Ensure you have the following installed:
-- Python 3.8+
-- Necessary dependencies from `requirements.txt`.
+### File Size Limit
 
-### Testing
-Run the script with sample arguments to ensure functionality. Use dry-run mode if necessary.
+The default file size limit is set to 3 MB. You can modify the `DEFAULT_FILE_SIZE_LIMIT` constant in the script if needed.
 
-## License
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+## Development Notes
+
+1. The script uses the OpenAI `gpt-4o-mini` model for summaries. Update the model name in the `single_summary_call` function if a different model is preferred.
+2. API rate limits are respected using `time.sleep()` delays. Adjust these values based on actual API restrictions.
+3. Date format validation ensures accurate API requests. Ensure date inputs are in `YYYY-MM-DD` format.
 
 ## Contributing
-Feel free to submit issues or pull requests. Contributions are welcome!
 
-## Disclaimer
-- Ensure your `api_headers.json` file is not exposed in public repositories to protect your API key.
-- Adhere to the terms and conditions of the e-Gov API and OpenAI API.
+Contributions are welcome! Please open an issue or submit a pull request with proposed changes.
+
+## License
+
+This script is licensed under the MIT License. See `LICENSE` for details.
+
+## Special Thanks
+
+Toshio Yamada ([LinkedIn](https://www.linkedin.com/in/toshioyamada/), [Github](https://github.com/montoyamada))
+
+SUN SHIHAO
