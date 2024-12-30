@@ -9,13 +9,11 @@ from openai import OpenAI
 import re
 import os
 import argparse
+import logging
+from retrying import retry  # リトライ戦略
 
-# OpenAI APIキーの設定（環境変数から取得することを推奨）
-client = OpenAI()
-
-if not client.api_key:
-    print("Error: OpenAI API key not set. Please set the 'OPENAI_API_KEY' environment variable.")
-    sys.exit(1)
+# ロギングの設定
+logging.basicConfig(level=logging.ERROR, format='%(asctime)s [%(levelname)s] %(message)s')
 
 # 外部ファイルからe-Gov APIヘッダーを読み込む
 def load_api_headers(file_path="api_headers.json"):
@@ -33,6 +31,7 @@ def load_api_headers(file_path="api_headers.json"):
 E_GOV_API_HEADERS = load_api_headers()
 
 E_GOV_API_BASE_URL = "https://laws.e-gov.go.jp/api/1"
+
 DEFAULT_FILE_SIZE_LIMIT = 3 * 1024 * 1024  # 3MB
 CATEGORY_DESCRIPTIONS = {
     2: "憲法・法律",
@@ -40,91 +39,86 @@ CATEGORY_DESCRIPTIONS = {
     4: "府省令・規則"
 }
 
-# 法令一覧を取得
+# OpenAI APIキーの設定
+client = OpenAI()
+if not client.api_key:
+    logging.error("OpenAI API key not set. Please set the 'OPENAI_API_KEY' environment variable.")
+    sys.exit(1)
+
+# APIレスポンスのリトライ設定
+@retry(wait_exponential_multiplier=1000, stop_max_attempt_number=5)
+def fetch_with_retry(url, headers):
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        raise Exception(f"API call failed: {response.status_code} {response.text}")
+    return response
+
+# APIヘッダーの読み込み
+def load_api_headers(file_path="api_headers.json"):
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        logging.error(f"Error loading API headers: {e}")
+        sys.exit(1)
+
+# 法令リストを取得
 def fetch_law_list(category, start_date_str, end_date_str):
     url = f"{E_GOV_API_BASE_URL}/lawlists/{category}"
-    response = requests.get(url, headers=E_GOV_API_HEADERS)
-    time.sleep(1)  # API制限回避のためにリクエスト間隔を設定
-
-    if response.status_code == 200:
-        try:
-            root = ET.fromstring(response.text)
-            law_list = []
-            for law_info in root.findall(".//LawNameListInfo"):
-                law_id = law_info.find("LawId").text
-                law_name = law_info.find("LawName").text
-                law_no = law_info.find("LawNo").text
-                promulgation_date = law_info.find("PromulgationDate").text
-
-                # 日付が取得できているか確認
-                if promulgation_date:
-                    # 日付を文字列として比較
-                    if start_date_str <= promulgation_date <= end_date_str:
-                        law_list.append({
-                            "LawId": law_id,
-                            "LawName": law_name,
-                            "LawNo": law_no,
-                            "PromulgationDate": promulgation_date
-                        })
-            print(f"Fetched {len(law_list)} laws for category {category} between {start_date_str} and {end_date_str}")
-            return law_list
-        except ET.ParseError as e:
-            print(f"XML Parse Error: {e}")
-            return []
-    else:
-        print(f"Failed to fetch law list for category {category}: {response.status_code}, {response.text}")
+    try:
+        response = fetch_with_retry(url, E_GOV_API_HEADERS)
+        root = ET.fromstring(response.text)
+        return [
+            {
+                "LawId": law.find("LawId").text,
+                "LawName": law.find("LawName").text,
+                "LawNo": law.find("LawNo").text,
+                "PromulgationDate": law.find("PromulgationDate").text,
+            }
+            for law in root.findall(".//LawNameListInfo")
+            if start_date_str <= law.find("PromulgationDate").text <= end_date_str
+        ]
+    except ET.ParseError as e:
+        logging.error(f"Error parsing XML: {e}")
         return []
 
 # 法令データを取得
 def fetch_law_data(law_id):
     url = f"{E_GOV_API_BASE_URL}/lawdata/{law_id}"
-    response = requests.get(url, headers=E_GOV_API_HEADERS)
-    time.sleep(0.5)  # API制限回避のための短い待機
-
-    if response.status_code == 200:
-        try:
-            root = ET.fromstring(response.text)
-            law_full_text_list = [sentence.text for sentence in root.findall(".//Sentence") if sentence.text is not None]
-            return "\n".join(law_full_text_list) if law_full_text_list else ""
-        except ET.ParseError as e:
-            print(f"XML Parse Error for law ID {law_id}: {e}")
-            return ""
-    else:
-        print(f"Failed to fetch law data for ID {law_id}: {response.status_code}")
+    try:
+        response = fetch_with_retry(url, E_GOV_API_HEADERS)
+        root = ET.fromstring(response.text)
+        return "\n".join(
+            [sentence.text for sentence in root.findall(".//Sentence") if sentence.text]
+        )
+    except ET.ParseError as e:
+        logging.error(f"XML Parse Error for law ID {law_id}: {e}")
         return ""
 
-# 文を分割
+# 文を分割してチャンク化
 def split_text_into_sentences(text):
     sentences = re.split(r'(。|！|？)', text)
-    # 文末記号と結合
     return [''.join(sentences[i:i+2]) for i in range(0, len(sentences)-1, 2)]
 
-# チャンクに分割
 def split_into_chunks(sentences, max_tokens=3000):
-    chunks = []
-    current_chunk = ""
-    current_length = 0
-
+    chunks, current_chunk, current_length = [], "", 0
     for sentence in sentences:
         sentence_length = len(sentence)
         if current_length + sentence_length > max_tokens:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            current_chunk = ""
-            current_length = 0
+            chunks.append(current_chunk.strip())
+            current_chunk, current_length = "", 0
         current_chunk += sentence
         current_length += sentence_length
-
     if current_chunk:
         chunks.append(current_chunk.strip())
-
     return chunks
 
 # 単一要約APIコール
 def single_summary_call(text, system_prompt="法令の概要を簡潔に作成してください。"):
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            # model="gpt-4o-mini",
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text}
@@ -135,28 +129,23 @@ def single_summary_call(text, system_prompt="法令の概要を簡潔に作成�
         time.sleep(1)  # API制限回避
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Error during OpenAI API call: {e}")
+        logging.error(f"Error during OpenAI API call: {e}")
         return "Error generating summary."
 
 # 階層的要約生成
 def generate_summary_hierarchical(law_text, max_chunk_tokens=3500):
+    # print(law_text)
     sentences = split_text_into_sentences(law_text)
     chunks = split_into_chunks(sentences, max_tokens=max_chunk_tokens)
 
-    if len(chunks) == 1:
-        return single_summary_call(chunks[0])
+    chunk_summaries = [
+        single_summary_call(chunk) for chunk in chunks
+    ]
 
-    chunk_summaries = []
-    for chunk in chunks:
-        summary = single_summary_call(chunk)
-        chunk_summaries.append(summary)
-
-    # チャンク要約を統合
-    final_summary = single_summary_call(
+    return single_summary_call(
         "\n".join(chunk_summaries),
         system_prompt="以下は各チャンクの要約です。これらを踏まえて全体の法令の概要を短くまとめてください。"
     )
-    return final_summary
 
 # ファイルに保存
 def save_to_file(data, category, file_count, start_date_str, end_date_str):
