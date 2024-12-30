@@ -63,21 +63,27 @@ def load_api_headers(file_path="api_headers.json"):
         sys.exit(1)
 
 # 法令リストを取得
-def fetch_law_list(category, start_date_str, end_date_str):
+def fetch_law_list(category, start_date, end_date):
     url = f"{E_GOV_API_BASE_URL}/lawlists/{category}"
     try:
         response = fetch_with_retry(url, E_GOV_API_HEADERS)
         root = ET.fromstring(response.text)
-        return [
-            {
-                "LawId": law.find("LawId").text,
-                "LawName": law.find("LawName").text,
-                "LawNo": law.find("LawNo").text,
-                "PromulgationDate": law.find("PromulgationDate").text,
-            }
-            for law in root.findall(".//LawNameListInfo")
-            if start_date_str <= law.find("PromulgationDate").text <= end_date_str
-        ]
+        
+        law_list = []
+        for law in root.findall(".//LawNameListInfo"):
+            promulgation_date_str = law.find("PromulgationDate").text
+            # YYYYMMDDフォーマットをパース
+            promulgation_date = datetime.strptime(promulgation_date_str, "%Y%m%d")
+            
+            if start_date <= promulgation_date <= end_date:
+                law_list.append({
+                    "LawId": law.find("LawId").text,
+                    "LawName": law.find("LawName").text,
+                    "LawNo": law.find("LawNo").text,
+                    "PromulgationDate": promulgation_date_str,
+                })
+        
+        return law_list
     except ET.ParseError as e:
         logging.error(f"Error parsing XML: {e}")
         return []
@@ -117,8 +123,8 @@ def split_into_chunks(sentences, max_tokens=3000):
 def single_summary_call(text, system_prompt="法令の概要を簡潔に作成してください。"):
     try:
         response = client.chat.completions.create(
-            # model="gpt-4o-mini",
-            model="gpt-4o",
+            model="gpt-4o-mini",
+            # model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text}
@@ -159,12 +165,11 @@ def save_to_file(data, category, file_count, start_date_str, end_date_str):
         print(f"Error saving to file {filename}: {e}")
 
 # 法令概要を生成
-def create_law_summaries(categories, start_date_str, end_date_str):
-    # 取得したい期間をstart_date_str～end_date_strで指定する
+def create_law_summaries(categories, start_date, end_date, start_date_str, end_date_str):
     for category in categories:
         category_desc = CATEGORY_DESCRIPTIONS.get(category, "Unknown")
         print(f"\nProcessing category {category}: {category_desc}")
-        law_list = fetch_law_list(category, start_date_str, end_date_str)
+        law_list = fetch_law_list(category, start_date, end_date)
 
         if not law_list:
             print(f"No laws found for category {category} within the specified date range.")
@@ -175,14 +180,9 @@ def create_law_summaries(categories, start_date_str, end_date_str):
         current_file_size = 0
 
         for law in tqdm(law_list, desc=f"Fetching laws for category {category}"):
-            promulgation_date_str = law.get("PromulgationDate")
             law_id = law.get("LawId")
             law_name = law.get("LawName")
             law_number = law.get("LawNo")
-
-            # 日付が指定範囲内か再確認（念のため）
-            if not (start_date_str <= promulgation_date_str <= end_date_str):
-                continue
 
             # 法令データ取得
             law_text = fetch_law_data(law_id)
@@ -196,7 +196,7 @@ def create_law_summaries(categories, start_date_str, end_date_str):
                 "LawId": law_id,
                 "LawNumber": law_number,
                 "LawName": law_name,
-                "PromulgationDate": promulgation_date_str,
+                "PromulgationDate": law.get("PromulgationDate"),
                 "Summary": summary
             }
             results.append(law_entry)
@@ -242,9 +242,13 @@ def main():
         print("Error: start_date must be earlier than or equal to end_date.")
         sys.exit(1)
 
+    # 日付の変換をmain関数で行う
+    start_date = datetime.strptime(start_date_str.replace('-', '.'), "%Y.%m.%d")
+    end_date = datetime.strptime(end_date_str.replace('-', '.'), "%Y.%m.%d")
+
     print(f"Fetching laws from {start_date_str} to {end_date_str}")
 
-    create_law_summaries(categories, start_date_str, end_date_str)
+    create_law_summaries(categories, start_date, end_date, start_date_str, end_date_str)
 
     # さらに過去のデータが必要な場合は以下を実行（例: 過去40～20年）
     # old_end_date = (datetime.strptime(start_date_str, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
