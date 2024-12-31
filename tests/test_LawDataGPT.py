@@ -24,10 +24,12 @@ class TestLawDataGPT(unittest.TestCase):
     def test_fetch_law_list(self, mock_fetch):
         # モックレスポンスの準備
         mock_response = MagicMock()
-        mock_response.text = '<?xml version="1.0" encoding="UTF-8"?><DataRoot><ApplData><LawNameListInfo><LawId>123</LawId><LawName>テスト法</LawName><LawNo>1号</LawNo><PromulgationDate>2024-01-01</PromulgationDate></LawNameListInfo></ApplData></DataRoot>'
+        mock_response.text = '<?xml version="1.0" encoding="UTF-8"?><DataRoot><ApplData><LawNameListInfo><LawId>123</LawId><LawName>テスト法</LawName><LawNo>1号</LawNo><PromulgationDate>20240101</PromulgationDate></LawNameListInfo></ApplData></DataRoot>'
         mock_fetch.return_value = mock_response
 
-        result = fetch_law_list(2, "2024-01-01", "2024-12-31")
+        start_date = datetime.strptime("2024-01-01", "%Y-%m-%d")
+        end_date = datetime.strptime("2024-12-31", "%Y-%m-%d")
+        result = fetch_law_list(2, start_date, end_date)
         
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["LawId"], "123")
